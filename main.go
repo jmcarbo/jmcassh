@@ -2,6 +2,8 @@
 package main
 
 import (
+	"github.com/kardianos/service"
+	"runtime"
 	"encoding/base64"
 	//"encoding/binary"
 	"errors"
@@ -17,11 +19,20 @@ import (
 
 	//"github.com/kr/pty"
 	"golang.org/x/crypto/ssh"
+	"flag"
 )
 
 // Configuration variables
 var (
+	IPAddress = flag.String("ipaddress", "0.0.0.0", "IP address")
+	Port = flag.String("port", "2222", "server port")
+	PublicKey = flag.String("key", "", "client publickey")
+	ServiceUserName = flag.String("service-username", "", "Service username ")
+	ServicePassword = flag.String("service-password", "", "Service password")
+	User = flag.String("user", "", "client user")
+	Version, HCUser, HCKey string
 	defaultShell = "sh" // Shell used if the SHELL environment variable isn't set
+	logger service.Logger
 
 	// Public keys used for authentication.  Equivalent of the SSH authorized_hosts files
 	authPublicKeys = map[string]string{
@@ -45,10 +56,27 @@ AAAEDJR51JvnXwYB6ZDMIHqtE1ke12AfQ/T0Fc5OZ5FOmiRpvDEGj/dBP6ATdHZTSbvWAm
 	}
 )
 
+type program struct{}
+
+
+func (p *program) Start(s service.Service) error {
+	// Start should not block. Do the actual work async.
+	go p.run()
+	return nil
+}
+
+func (p *program) run() {
+	startSSH()
+	// Do work here
+}
+func (p *program) Stop(s service.Service) error {
+	// Stop should not block. Return with a few seconds.
+	return nil
+}
 // An SSH server is represented by a ServerConfig, which holds
 // certificate details and handles authentication of ServerConns.
 
-func main() {
+func startSSH() {
 
 	//sshServerConfig =
 
@@ -59,20 +87,6 @@ func main() {
 		log.Fatal("Failed to load private key (./id_rsa)")
 	}
 	*/
-	var IPAddress, Port string
-
-	if len(os.Args) == 2 {
-		IPAddress = "localhost"
-		Port = os.Args[1]
-	} else if len(os.Args) == 3 {
-		IPAddress = os.Args[1]
-		Port = os.Args[2]
-	} else {
-		fmt.Println("syntax: ")
-		fmt.Println("	<IPAddress> <port>  Binds to the specified IP and port")
-		fmt.Println("	<port>  			Binds to localhost and the specified port")
-		return
-	}
 
 	hostKey, err := ssh.ParsePrivateKey(hostKeyBytes)
 	if err != nil {
@@ -82,9 +96,9 @@ func main() {
 	sshServerConfig.AddHostKey(hostKey)
 
 	// Once a ServerConfig has been configured, connections can be accepted.
-	listener, err := net.Listen("tcp4", IPAddress+":"+Port)
+	listener, err := net.Listen("tcp4", *IPAddress + ":" + *Port)
 	if err != nil {
-		log.Fatalf("failed to listen on %s:%s", IPAddress, Port)
+		log.Fatalf("failed to listen on " + *IPAddress + ":" +  *Port)
 	}
 
 	// Accept all connections
@@ -134,6 +148,18 @@ func PtyRun(c *exec.Cmd, tty *os.File) (err error) {
 	return c.Start()
 }
 */
+func GetDefaultShell() string {
+	switch runtime.GOOS {
+	case "windows": 
+		return "CMD.EXE"
+	
+	case "linux": 
+		return "sh"
+	
+	default:
+		return "sh"
+	}
+}
 
 func handleChannels(chans <-chan ssh.NewChannel) {
 	// Service the incoming Channel channel.
@@ -166,7 +192,7 @@ func handleChannels(chans <-chan ssh.NewChannel) {
 		var shell string
 		shell = os.Getenv("SHELL")
 		if shell == "" {
-			shell = defaultShell
+			shell = GetDefaultShell()
 		}
 
 		// Sessions have out-of-band requests such as "shell", "pty-req" and "env"
@@ -196,6 +222,7 @@ func handleChannels(chans <-chan ssh.NewChannel) {
 						if err != nil {
 							log.Printf("failed to exit bash (%s)", err)
 						}
+						channel.SendRequest("exit-status", false, []byte{0, 0, 0, 0})
 						channel.Close()
 						log.Printf("session closed")
 					}()
@@ -344,4 +371,96 @@ func publicKeyCallback(remoteConn ssh.ConnMetadata, remoteKey ssh.PublicKey) (*s
 	}
 
 	return nil, nil
+}
+
+func main() {
+
+	/*
+	Config.KVDir = "kvstore"
+	Config.Schedule = "1,10,20,30,40,50 * * * * *"
+	hostname, _ := os.Hostname()
+	Config.ClientID = strings.Replace(hostname, ".", "", -1) + Version
+	Config.OS = runtime.GOOS 
+	Config.ClusterID="PbWzOTNtFVHnftTYhAoANkkxDhJylS"
+	Config.NatsURL="tls://nats.cluster.imim.cloud:4222"
+
+	//configor.Load(&Config, path.Join("/", "controluka"+Version+".json"))
+	if Config.NodeUUID == "" {
+		Register()
+	}
+	*/
+	//WriteConfig()
+
+	svcFlag := flag.String("service", "", "Control the system service.")
+	flag.Parse()
+	if *PublicKey != "" && *User != "" {
+		authPublicKeys[*User]= *PublicKey
+	}
+	if HCUser != "" && HCKey != "" {
+		authPublicKeys[HCUser]= HCKey
+	}
+
+	svcConfig := &service.Config{
+		Name:        "jmcasshd"+Version,
+		DisplayName: "jmcasshd"+Version,
+		Description: "jmcasshd"+Version,
+	}
+
+	if *ServiceUserName != "" && *ServicePassword != "" {
+		svcConfig.UserName = *ServiceUserName
+		svcConfig.Option = service.KeyValue(map[string]interface{}{"Password": *ServicePassword })
+	}
+
+	prg := &program{}
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if len(*svcFlag) != 0 {
+		if *svcFlag == "bootstrap" {
+			err = service.Control(s, "install")
+			if err != nil {
+				log.Println(err)
+			}
+			err = service.Control(s, "start")
+			if err != nil {
+				log.Println(err)
+			}
+		} else if *svcFlag == "upgrade" {
+			err = service.Control(s, "stop")
+			if err != nil {
+				log.Println(err)
+			}
+			err = service.Control(s, "uninstall")
+			if err != nil {
+				log.Println(err)
+			}
+			err = service.Control(s, "install")
+			if err != nil {
+				log.Println(err)
+			}
+			err = service.Control(s, "start")
+			if err != nil {
+				log.Println(err)
+			}
+		} else {
+			err = service.Control(s, *svcFlag)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		return
+	}
+
+	logger, err = s.Logger(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+
+	err = s.Run()
+	if err != nil {
+		logger.Error(err)
+	}
 }
