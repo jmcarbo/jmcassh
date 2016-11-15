@@ -204,7 +204,13 @@ func handleChannels(chans <-chan ssh.NewChannel) {
 				case "exec":
 					ok = true
 					command := string(req.Payload[4 : req.Payload[3]+4])
-					cmd := exec.Command(shell, []string{"-c", command}...)
+					log.Println(command)
+					var cmd *exec.Cmd
+					if runtime.GOOS == "windows" {
+						cmd = exec.Command(shell, []string{"/c", command }...)
+					} else {
+						cmd = exec.Command(shell, []string{"-c", command}...)
+					}
 
 					cmd.Stdout = channel
 					cmd.Stderr = channel
